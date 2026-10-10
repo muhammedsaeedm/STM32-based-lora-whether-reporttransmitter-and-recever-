@@ -1,0 +1,454 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>STM32 Peripheral Drivers Technical Analysis</title>
+<style>
+@page {
+    margin: 1.5cm;
+    size: A4;
+}
+body {
+    font-family: 'Liberation Sans', 'DejaVu Sans', Arial, sans-serif;
+    line-height: 1.5;
+    color: #1a202c;
+    font-size: 10pt;
+}
+h1 {
+    color: #1e3a8a;
+    border-bottom: 2px solid #3b82f6;
+    padding-bottom: 0.3em;
+    font-size: 20pt;
+    margin-top: 15px;
+    margin-bottom: 10px;
+}
+h2 {
+    color: #1e40af;
+    border-bottom: 1px solid #cbd5e1;
+    padding-bottom: 0.2em;
+    font-size: 14pt;
+    margin-top: 20px;
+    margin-bottom: 8px;
+    page-break-after: avoid;
+}
+h3 {
+    color: #334155;
+    font-size: 11.5pt;
+    margin-top: 14px;
+    margin-bottom: 6px;
+    page-break-after: avoid;
+}
+h4 {
+    color: #475569;
+    font-size: 10.5pt;
+    margin-top: 10px;
+    margin-bottom: 4px;
+}
+pre {
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-family: 'Liberation Mono', 'DejaVu Sans Mono', Courier, monospace;
+    font-size: 8pt;
+    overflow-x: auto;
+    line-height: 1.35;
+    margin: 8px 0;
+    page-break-inside: avoid;
+}
+code {
+    background-color: #f1f5f9;
+    padding: 0.15em 0.3em;
+    border-radius: 3px;
+    font-family: 'Liberation Mono', 'DejaVu Sans Mono', Courier, monospace;
+    font-size: 8.5pt;
+    color: #0f172a;
+}
+pre code {
+    background-color: transparent;
+    padding: 0;
+    font-size: 8pt;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 10px;
+    margin-bottom: 12px;
+    font-size: 8.5pt;
+    page-break-inside: avoid;
+}
+th, td {
+    border: 1px solid #cbd5e1;
+    padding: 5px 8px;
+    text-align: left;
+}
+th {
+    background-color: #e2e8f0;
+    color: #0f172a;
+    font-weight: 600;
+}
+tr:nth-child(even) {
+    background-color: #f8fafc;
+}
+hr {
+    border: 0;
+    height: 1px;
+    background: #cbd5e1;
+    margin: 18px 0;
+}
+p {
+    margin: 5px 0 8px 0;
+}
+ul, ol {
+    margin: 4px 0 8px 0;
+    padding-left: 20px;
+}
+li {
+    margin-bottom: 3px;
+}
+</style>
+</head><body>
+<h1>Embedded Software Project: STM32 Peripheral Drivers</h1>
+<h2>Comprehensive Technical Analysis & Implementation Report (GPIO, USART, I2C, SPI)</h2>
+<p><b>Author:</b> Muhammed Saeed  </p>
+<p><b>Target Hardware:</b> STM32F446RE / STM32F401RE (NUCLEO-F446RE, NUCLEO-F401RE, STM32F4-Discovery)  </p>
+<p><b>Core Architecture:</b> ARM® Cortex®-M4 with FPU @ 180 MHz (STM32F446RE) / 84 MHz (STM32F401RE)  </p>
+<p><b>Reference Manuals:</b> ST RM0390 (STM32F446xx), ST RM0368 (STM32F401xx), ARM Cortex-M4 PM0214  </p>
+<p><b>Base Repository:</b> [https://github.com/ghostcoder911/STM32F446RE_Drivers.git](https://github.com/ghostcoder911/STM32F446RE_Drivers.git)  </p>
+<hr>
+<h2>Executive Summary</h2>
+<p>Bare-metal firmware development forms the foundation of embedded software engineering. By bypassing high-level vendor libraries (such as STM32Cube HAL or Arduino abstractions), developers gain deterministic control over hardware registers, timing constraints, interrupt latencies, and silicon memory footprints.</p>
+<p>This technical report delivers an in-depth analysis of a complete bare-metal peripheral driver suite developed from scratch for the STMicroelectronics STM32F446RE/STM32F401RE microcontrollers. Four core communication and control peripherals are systematically examined:</p>
+<p>1. <b>GPIO (General Purpose Input/Output)</b></p>
+<p>2. <b>USART (Universal Synchronous/Asynchronous Receiver Transmitter)</b></p>
+<p>3. <b>I2C (Inter-Integrated Circuit)</b></p>
+<p>4. <b>SPI (Serial Peripheral Interface)</b></p>
+<p>Along with peripheral analysis, this document details the board adaptation layer (<code>BoardConfig.h</code>) for the <b>NUCLEO-F446RE / NUCLEO-F401RE</b> platform, resolves critical silicon bugs identified during driver inspection (including NVIC register indexing and 16-bit SPI pointer arithmetic), presents six mandatory application examples, and shares reflective takeaways on embedded driver design.</p>
+<hr>
+<h2>1. STM32 MCU Architecture & Bus Topology</h2>
+<p>The STM32F446RE is built on a 32-bit multi-AHB bus matrix interconnecting the ARM Cortex-M4 CPU with on-chip SRAM, Flash, and peripheral buses:</p>
+<ul>
+<li><b>Flash Memory:</b> 512 KB starting at <code>0x08000000U</code></li>
+<li><b>SRAM:</b> 128 KB total (SRAM1: 112 KB at <code>0x20000000U</code>, SRAM2: 16 KB at <code>0x2001C000U</code>)</li>
+<li><b>System ROM (Bootloader):</b> Starting at <code>0x1FFF0000U</code></li>
+<li><b>AHB1 Bus (up to 180 MHz):</b> Hosts high-speed system controllers and GPIO Ports A through H (<code>0x40020000U</code> to <code>0x40021C00U</code>), RCC (<code>0x40023800U</code>), DMA1/2.</li>
+<li><b>APB1 Bus (up to 45 MHz):</b> Low-speed peripheral bus hosting TIM2-TIM7, SPI2/3, USART2/3, UART4/5, I2C1-I2C3.</li>
+<li><b>APB2 Bus (up to 90 MHz):</b> High-speed peripheral bus hosting TIM1/TIM8, USART1/6, SPI1/4, SYSCFG, EXTI, ADC1-ADC3.</li>
+</ul>
+<p>In default bare-metal reset condition, the microcontroller runs from the internal High-Speed Internal (HSI) RC oscillator at <b>16 MHz</b>. Both APB1 and APB2 buses operate at 16 MHz (prescalers = 1). Dynamic bus clock determination is orchestrated by the <code>stm32f446xx_rcc_driver</code>, ensuring baud rate generators and I2C prescalers dynamically match system frequency.</p>
+<hr>
+<h2>2. GPIO Driver Deep Dive</h2>
+<h3>2.1 Hardware Register Architecture</h3>
+<p>The General Purpose I/O peripheral on the STM32F446RE controls up to 16 pins per port. Each port is represented in the driver by the C structure <code>GPIO_RegDef_t</code>:</p>
+<pre><code>
+typedef struct {
+    __vo uint32_t MODER;    /*!&lt; GPIO port mode register,               Address offset: 0x00 */
+    __vo uint32_t OTYPER;   /*!&lt; GPIO port output type register,        Address offset: 0x04 */
+    __vo uint32_t OSPEEDR;  /*!&lt; GPIO port output speed register,       Address offset: 0x08 */
+    __vo uint32_t PUPDR;    /*!&lt; GPIO port pull-up/pull-down register,  Address offset: 0x0C */
+    __vo uint32_t IDR;      /*!&lt; GPIO port input data register,         Address offset: 0x10 */
+    __vo uint32_t ODR;      /*!&lt; GPIO port output data register,        Address offset: 0x14 */
+    __vo uint32_t BSRR;     /*!&lt; GPIO port bit set/reset register,      Address offset: 0x18 */
+    __vo uint32_t LCKR;     /*!&lt; GPIO port configuration lock register, Address offset: 0x1C */
+    __vo uint32_t AFR[2];   /*!&lt; AFR[0]: AFRL (pins 0-7), AFR[1]: AFRH (pins 8-15), Offset: 0x20 */
+} GPIO_RegDef_t;
+</code></pre>
+<h3>2.2 Driver Data Structures & Hardware Abstraction</h3>
+<p>The driver encapsulates pin configuration into <code>GPIO_PinConfig_t</code> and binds it to a physical peripheral port through <code>GPIO_Handle_t</code>:</p>
+<pre><code>
+typedef struct {
+    uint8_t GPIO_PinNumber;       /* 0 to 15 */
+    uint8_t GPIO_PinMode;         /* 0: IN, 1: OUT, 2: ALTFN, 3: ANALOG, 4: IT_FT, 5: IT_RT, 6: IT_RFT */
+    uint8_t GPIO_PinSpeed;        /* 0: LOW, 1: MEDIUM, 2: FAST, 3: HIGH */
+    uint8_t GPIO_PinPuPdControl;   /* 0: NO_PUPD, 1: PU, 2: PD */
+    uint8_t GPIO_PinOPType;        /* 0: Push-Pull, 1: Open-Drain */
+    uint8_t GPIO_PinAltFunMode;    /* AF0 to AF15 */
+} GPIO_PinConfig_t;
+
+typedef struct {
+    GPIO_RegDef_t *pGPIOx;        /* Base address: GPIOA, GPIOB, GPIOC, etc. */
+    GPIO_PinConfig_t GPIO_PinConfig;
+} GPIO_Handle_t;
+</code></pre>
+<h3>2.3 Step-by-Step Initialization Sequence (`GPIO_Init`)</h3>
+<p>1. <b>Clock Activation:</b> The driver automatically invokes <code>GPIO_PeriClockControl(pGPIOHandle->pGPIOx, ENABLE)</code>, which sets the corresponding bit in <code>RCC->AHB1ENR</code> (e.g., bit 0 for GPIOA, bit 2 for GPIOC).</p>
+<p>2. <b>Mode Configuration (<code>MODER</code>):</b></p>
+<p>   - For non-interrupt modes (<code>Mode <= 3</code>), the 2-bit field corresponding to the pin is cleared and configured:</p>
+<p>     $$\text{MODER} \leftarrow (\text{MODER} \ \& \ \sim(0\text{x}3 \ll (2 \times \text{Pin}))) \ | \ (\text{Mode} \ll (2 \times \text{Pin}))$$</p>
+<p>   - For interrupt modes (<code>Mode > 3</code>):</p>
+<p>     - The pin mode is kept as Input (<code>00b</code>).</p>
+<p>     - <b>Edge Triggering:</b> Configures <code>EXTI->FTSR</code> (Falling Trigger) and/or <code>EXTI->RTSR</code> (Rising Trigger).</p>
+<p>     - <b>SYSCFG Routing:</b> Enables <code>SYSCFG</code> clock (<code>RCC->APB2ENR |= (1 << 14)</code>). It maps the port code (<code>0</code> for A, <code>1</code> for B, <code>2</code> for C) into <code>SYSCFG->EXTICR[Pin / 4]</code> at position <code>(Pin % 4) * 4</code>.</p>
+<p>     - <b>Interrupt Unmasking:</b> Enables event delivery by setting the corresponding bit in <code>EXTI->IMR</code>.</p>
+<p>3. <b>Speed Configuration (<code>OSPEEDR</code>):</b> Programs low, medium, fast, or high slew rates into the 2-bit field <code>(2 * Pin)</code>.</p>
+<p>4. <b>Resistor Configuration (<code>PUPDR</code>):</b> Programs floating (no pull), internal weak pull-up (~40 k$\Omega$), or weak pull-down.</p>
+<p>5. <b>Output Driver Configuration (<code>OTYPER</code>):</b> Programs single-ended push-pull (<code>0</code>) or open-drain (<code>1</code>).</p>
+<p>6. <b>Alternate Function Multiplexing (<code>AFR</code>):</b> If <code>GPIO_MODE_ALTFN</code> is chosen, the driver routes the pin to an internal peripheral multiplexer:</p>
+<p>   - Pins 0–7 target <code>AFR[0]</code> (AFRL): shifted by <code>(Pin % 8) * 4</code>.</p>
+<p>   - Pins 8–15 target <code>AFR[1]</code> (AFRH): shifted by <code>((Pin - 8) % 8) * 4</code>.</p>
+<h3>2.4 I/O Data Transfer APIs</h3>
+<ul>
+<li><b>Atomic Pin Read (<code>GPIO_ReadFromInputPin</code>):</b> Reads the 32-bit <code>IDR</code> register, shifts right by <code>PinNumber</code>, and isolates bit 0:</li>
+</ul>
+<p>  $$\text{Value} = (\text{pGPIOx}\rightarrow\text{IDR} \gg \text{PinNumber}) \ \& \ 0\text{x}01$$</p>
+<ul>
+<li><b>Atomic Pin Write (<code>GPIO_WriteToOutputPin</code>):</b> Modifies bit <code>PinNumber</code> in <code>ODR</code> via bitwise OR (set) or bitwise AND with complement (reset).</li>
+<li><b>Pin Toggle (<code>GPIO_ToggleOutputPin</code>):</b> Evaluates <code>pGPIOx->ODR ^= (1 << PinNumber)</code> in a single cycle.</li>
+</ul>
+<h3>2.5 Interrupt & NVIC Management</h3>
+<p>The driver provides direct integration with the Cortex-M4 Nested Vectored Interrupt Controller (NVIC):</p>
+<ul>
+<li><b>Enable/Disable (<code>GPIO_IRQInterruptConfig</code>):</b> Targets NVIC Interrupt Set-Enable (<code>NVIC_ISER0-2</code>) and Clear-Enable (<code>NVIC_ICER0-2</code>) registers.</li>
+<li><b>Priority Programming (<code>GPIO_IRQPriorityConfig</code>):</b> Identifies the 8-bit priority slot in <code>NVIC_IPR[IRQNumber / 4]</code>. Because the STM32F446RE implements only the 4 most significant bits of each 8-bit priority register, the priority is shifted left by $(8 - 4) = 4$ bits plus the byte offset within the word.</li>
+<li><b>ISR Clearing (<code>GPIO_IRQHandling</code>):</b> Clears the pending condition in <code>EXTI->PR</code> by writing a <code>1</code> (rc_w1 behavior).</li>
+</ul>
+<hr>
+<h2>3. USART Driver Deep Dive</h2>
+<h3>3.1 Hardware Register Architecture</h3>
+<p>The Universal Synchronous/Asynchronous Receiver Transmitter (USART) provides full-duplex NRZ serial communications. It consists of:</p>
+<ul>
+<li><code>SR</code> (Status Register): Flags <code>TXE</code> (bit 7), <code>TC</code> (bit 6), <code>RXNE</code> (bit 5), <code>IDLE</code> (bit 4), <code>ORE</code> (bit 3), <code>PE</code> (bit 0).</li>
+<li><code>DR</code> (Data Register): 9-bit transmit/receive buffer.</li>
+<li><code>BRR</code> (Baud Rate Register): 12-bit mantissa (<code>BRR[15:4]</code>) and 4-bit fraction (<code>BRR[3:0]</code>).</li>
+<li><code>CR1</code>, <code>CR2</code>, <code>CR3</code>: Control registers for oversampling, word length, parity, stop bits, and interrupts.</li>
+</ul>
+<h3>3.2 Dynamic Baud Rate Generator (`USART_SetBaudRate`)</h3>
+<p>A critical engineering challenge in bare-metal USART drivers is accurate fractional baud rate computation without floating-point math overhead. The driver dynamically queries the APB bus clock:</p>
+<ul>
+<li>USART1 and USART6 reside on APB2 (<code>RCC_GetPCLK2Value()</code>).</li>
+<li>USART2, USART3, UART4, UART5 reside on APB1 (<code>RCC_GetPCLK1Value()</code>).</li>
+</ul>
+<p>The standard formula for the clock divider is:</p>
+<p>$$\text{USARTDIV} = \frac{f_{\text{PCLK}}}{8 \times (2 - \text{OVER8}) \times \text{BaudRate}}$$</p>
+<p>To eliminate floating-point arithmetic while preserving fractional precision, the driver scales calculations by a factor of 100:</p>
+<pre><code>
+if (pUSARTx-&gt;CR1 &amp; (1 &lt;&lt; USART_CR1_OVER8)) {
+    usartdiv = ((25 * PCLKx) / (2 * BaudRate)); /* OVER8 = 1 */
+} else {
+    usartdiv = ((25 * PCLKx) / (4 * BaudRate)); /* OVER16 = 0 */
+}
+
+M_part = usartdiv / 100;
+F_part = usartdiv - (M_part * 100);
+
+if (pUSARTx-&gt;CR1 &amp; (1 &lt;&lt; USART_CR1_OVER8)) {
+    F_part = (((F_part * 8) + 50) / 100) &amp; 0x07;  /* 3-bit fraction with rounding */
+} else {
+    F_part = (((F_part * 16) + 50) / 100) &amp; 0x0F; /* 4-bit fraction with rounding */
+}
+
+pUSARTx-&gt;BRR = (M_part &lt;&lt; 4) | F_part;
+</code></pre>
+<p>For 115200 baud at 16 MHz HSI with <code>OVER16 = 0</code>:</p>
+<ul>
+<li>$\text{USARTDIV} = 16{,}000{,}000 / (16 \times 115200) = 8.6805$</li>
+<li><code>M_part</code> = $8$ (<code>0x08</code>)</li>
+<li><code>F_part</code> = $((68 \times 16) + 50) / 100 = 11$ (<code>0x0B</code>)</li>
+<li>Result written to <code>BRR</code> = <code>0x008B</code>, yielding an effective baud rate of $115{,}107$ bps (error $< 0.08\%$, well within RS-232 tolerances).</li>
+</ul>
+<h3>3.3 Data Transmission Mechanism</h3>
+<ul>
+<li><b>Polling Mode (<code>USART_SendData</code>):</b></li>
+</ul>
+<p>  1. For each byte in buffer, spin-wait until <code>TXE</code> (Transmit Data Register Empty) is asserted:</p>
+<p>     <code></code>`c</p>
+<p>     while (!USART_GetFlagStatus(pUSARTHandle->pUSARTx, USART_FLAG_TXE));</p>
+<p>     <code></code>`</p>
+<p>  2. For 8-bit mode, load <code>pUSARTHandle->pUSARTx->DR = (*pTxBuffer & 0xFF)</code>.</p>
+<p>  3. Advance <code>pTxBuffer++</code> and decrement <code>Len</code>.</p>
+<p>  4. After all bytes are loaded, spin-wait for <code>TC</code> (Transmission Complete):</p>
+<p>     <code></code>`c</p>
+<p>     while (!USART_GetFlagStatus(pUSARTHandle->pUSARTx, USART_FLAG_TC));</p>
+<p>     <code></code>`</p>
+<p>     This ensures the shift register has fully transmitted the stop bit before the peripheral or pin multiplexer is altered.</p>
+<h3>3.4 Data Reception Mechanism</h3>
+<ul>
+<li><b>Polling Mode (<code>USART_ReceiveData</code>):</b></li>
+</ul>
+<p>  1. Spin-wait until <code>RXNE</code> (Read Data Register Not Empty) is asserted.</p>
+<p>  2. If parity is disabled, read <code>*pRxBuffer = (uint8_t)(pUSARTx->DR & 0xFF)</code>.</p>
+<p>  3. If parity is enabled in 8-bit frame mode, bit 7 contains the hardware parity bit; the driver automatically masks the 7-bit user payload: <code>*pRxBuffer = (uint8_t)(pUSARTx->DR & 0x7F)</code>.</p>
+<h3>3.5 Interrupt-Driven State Machine</h3>
+<ul>
+<li><code>USART_SendDataIT</code> / <code>USART_ReceiveDataIT</code> store the application buffer pointer and length in <code>USART_Handle_t</code>, mark the state as <code>USART_BUSY_IN_TX</code> / <code>USART_BUSY_IN_RX</code>, and enable <code>TXEIE</code> / <code>RXNEIE</code>.</li>
+<li><code>USART_IRQHandling</code> handles interrupts non-blockingly, servicing bytes until <code>Len == 0</code>, disabling interrupt masks, and notifying the application via <code>USART_ApplicationEventCallback</code>.</li>
+</ul>
+<hr>
+<h2>4. I2C Driver Deep Dive</h2>
+<h3>4.1 Hardware Register Architecture & Protocol Timing</h3>
+<p>I2C is an open-drain, synchronous, bidirectional two-wire bus. In STM32 hardware, the I2C peripheral implements hardware clock stretching and strict protocol timing:</p>
+<ul>
+<li><code>CR1</code>: Peripheral enable (<code>PE</code>), Start condition (<code>START</code>), Stop condition (<code>STOP</code>), Acknowledge enable (<code>ACK</code>).</li>
+<li><code>CR2</code>: Peripheral clock frequency (<code>FREQ[5:0]</code>), Event/Buffer/Error interrupt enables (<code>ITEVTEN</code>, <code>ITBUFEN</code>, <code>ITERREN</code>).</li>
+<li><code>SR1</code>: Start bit sent (<code>SB</code>), Address sent/matched (<code>ADDR</code>), Byte transfer finished (<code>BTF</code>), Stop received (<code>STOPF</code>), <code>RXNE</code>, <code>TXE</code>, Bus error (<code>BERR</code>), Arbitration lost (<code>ARLO</code>), Acknowledge failure (<code>AF</code>).</li>
+<li><code>SR2</code>: Master/Slave (<code>MSL</code>), Bus busy (<code>BUSY</code>), Transmitter/Receiver (<code>TRA</code>).</li>
+<li><code>CCR</code>: Clock control register for SCL generation.</li>
+<li><code>TRISE</code>: Maximum rise time register.</li>
+</ul>
+<h3>4.2 Clock & Timing Calculations (`I2C_Init`)</h3>
+<p>1. <b>Peripheral Frequency (<code>CR2</code>):</b></p>
+<p>   $$\text{CR2}\rightarrow\text{FREQ} = \frac{f_{\text{PCLK1}}}{1{,}000{,}000}$$</p>
+<p>   For a 16 MHz APB1 clock, <code>FREQ = 16</code>.</p>
+<p>2. <b>Clock Control Register (<code>CCR</code>):</b></p>
+<p>   - <b>Standard Mode (100 kHz, 50% duty cycle):</b></p>
+<p>     $$T_{\text{high}} = T_{\text{low}} = \text{CCR} \times T_{\text{PCLK1}} \implies \text{CCR} = \frac{f_{\text{PCLK1}}}{2 \times f_{\text{SCL}}}$$</p>
+<p>     For $f_{\text{PCLK1}} = 16\text{ MHz}$ and $f_{\text{SCL}} = 100\text{ kHz}$: $\text{CCR} = 16{,}000{,}000 / 200{,}000 = 80$ (<code>0x0050</code>).</p>
+<p>   - <b>Fast Mode (400 kHz, Duty = 0, $T_{\text{low}} = 2 \times T_{\text{high}}$):</b></p>
+<p>     $$\text{CCR} = \frac{f_{\text{PCLK1}}}{3 \times f_{\text{SCL}}}$$</p>
+<p>3. <b>Rise Time Register (<code>TRISE</code>):</b></p>
+<p>   According to I2C specifications, maximum allowable SCL rise time is 1000 ns in Standard Mode and 300 ns in Fast Mode:</p>
+<p>   $$\text{TRISE}_{\text{SM}} = \frac{1000\text{ ns}}{T_{\text{PCLK1}}} + 1 = \left(\frac{f_{\text{PCLK1}}}{1{,}000{,}000}\right) + 1 = 16 + 1 = 17$$</p>
+<h3>4.3 Master Transmit & Receive Sequences</h3>
+<pre><code>
+I2C Master Transmit Sequence:
+[START] -&gt; Wait SB=1 -&gt; Write [SlaveAddr + W] -&gt; Wait ADDR=1 -&gt; Clear ADDR (Read SR1, SR2)
+        -&gt; For each Byte: Wait TXE=1 -&gt; Write DR -&gt; Wait BTF=1 -&gt; [STOP]
+
+I2C Master Receive Sequence (Len &gt; 1):
+[START] -&gt; Wait SB=1 -&gt; Write [SlaveAddr + R] -&gt; Wait ADDR=1 -&gt; Clear ADDR (Read SR1, SR2)
+        -&gt; Read Bytes: Wait RXNE=1 -&gt; Read DR
+        -&gt; At (Len == 2): Disable ACK -&gt; Generate STOP -&gt; Read Byte 1 -&gt; Wait RXNE -&gt; Read Byte 2
+</code></pre>
+<ul>
+<li><b>Repeated Start Support (<code>Sr</code>):</b> If <code>Sr == I2C_ENABLE_SR</code>, the driver avoids generating a STOP condition at the end of the transaction. The master maintains exclusive control of the bus to immediately execute an address phase read (essential for reading I2C sensor registers like LM75).</li>
+<li><b>Clearing the ADDR Flag:</b> Handled by a strict hardware sequence: reading <code>SR1</code> followed by reading <code>SR2</code>. The driver reads both into a volatile dummy variable:</li>
+</ul>
+<p>  <code></code>`c</p>
+<p>  dummy_read = pI2CHandle->pI2Cx->SR1;</p>
+<p>  dummy_read = pI2CHandle->pI2Cx->SR2;</p>
+<p>  (void)dummy_read;</p>
+<p>  <code></code>`</p>
+<hr>
+<h2>5. SPI Driver Deep Dive</h2>
+<h3>5.1 Hardware Register Architecture</h3>
+<p>The Serial Peripheral Interface (SPI) is a synchronous, high-speed, full-duplex 4-wire serial bus:</p>
+<ul>
+<li><code>CR1</code>: Bidirectional mode (<code>BIDIMODE</code>), Receive-only (<code>RXONLY</code>), Software slave management (<code>SSM</code>), Internal slave select (<code>SSI</code>), Data frame format (<code>DFF</code>: 8/16-bit), Baud rate prescaler (<code>BR[2:0]</code>: DIV2 to DIV256), Master selection (<code>MSTR</code>), Clock polarity (<code>CPOL</code>), Clock phase (<code>CPHA</code>).</li>
+<li><code>CR2</code>: SSOE (SS Output Enable), TXEIE, RXNEIE, ERRIE.</li>
+<li><code>SR</code>: <code>BSY</code> (Busy), <code>OVR</code> (Overrun), <code>MODF</code> (Mode fault), <code>TXE</code>, <code>RXNE</code>.</li>
+<li><code>DR</code>: 16-bit data register shared between TX and RX shift registers.</li>
+</ul>
+<h3>5.2 Slave Select Management (SSM vs Hardware NSS)</h3>
+<p>In multi-master systems, if the hardware NSS pin is pulled low externally while the SPI is configured as master, the hardware flags a <b>Mode Fault (<code>MODF</code>)</b> error and forces the peripheral into slave mode (<code>MSTR</code> bit cleared in CR1).</p>
+<p>To prevent this in single-master configurations without dedicating hardware NSS pins:</p>
+<p>1. The driver sets <code>SPI_SSM = SPI_SSM_EN</code> (Software Slave Management enabled).</p>
+<p>2. The driver sets <code>SPI_SSIConfig(pSPIx, ENABLE)</code>: This pulls the internal NSS signal high via the <code>SSI</code> bit in <code>CR1</code>, guaranteeing the hardware never enters a Mode Fault condition.</p>
+<p>3. The physical Chip Select line is controlled manually via a GPIO pin (e.g., <code>PB12</code>), giving the firmware precise framing control.</p>
+<h3>5.3 8-bit vs 16-bit Data Transfer & Pointer Handling</h3>
+<p>When <code>DFF = 0</code> (8-bit frames), data is loaded into <code>DR</code> as single bytes.</p>
+<p>When <code>DFF = 1</code> (16-bit frames), data is cast to <code>uint16_t*</code> and written in a single 16-bit half-word write.</p>
+<p><i>(Driver Correction)</i>: During our deep-dive analysis, lines 196 & 237 were corrected from invalid <code>(uint16_t*)pTxBuffer++;</code> casting to proper multi-byte pointer increments:</p>
+<pre><code>
+if (pSPIx-&gt;CR1 &amp; (1 &lt;&lt; SPI_CR1_DFF)) {
+    pSPIx-&gt;DR = *((uint16_t*)pTxBuffer);
+    Len -= 2;
+    pTxBuffer += 2; /* Correct 16-bit address advancement */
+} else {
+    pSPIx-&gt;DR = *pTxBuffer;
+    Len--;
+    pTxBuffer++;
+}
+</code></pre>
+<h3>5.4 Peripheral Shutdown Protocol</h3>
+<p>To prevent truncating the final clock pulse or data bit on MOSI:</p>
+<pre><code>
+/* 1. Transmit buffer */
+SPI_SendData(pSPIx, data, len);
+/* 2. Wait until TXE and BSY are cleared */
+while (SPI_GetFlagStatus(pSPIx, SPI_BUSY_FLAG));
+/* 3. Safely de-assert Chip Select &amp; disable peripheral */
+GPIO_WriteToOutputPin(BOARD_SPI_GPIO_PORT, BOARD_SPI_NSS_PIN, GPIO_PIN_SET);
+SPI_PeripheralControl(pSPIx, DISABLE);
+</code></pre>
+<hr>
+<h2>6. Board Adaptation & Pin Mapping (Discovery vs Nucleo)</h2>
+<p>Reference example code originally written for the STM32F4-Discovery board must be ported to the <b>NUCLEO-F446RE / NUCLEO-F401RE</b>. The table below highlights physical differences reconciled via <code>BoardConfig.h</code>:</p>
+<table><thead><tr>
+<th>Function</th>
+<th>STM32F4-Discovery</th>
+<th>NUCLEO-F446RE / F401RE</th>
+<th>Architectural Impact</th>
+</tr></thead><tbody>
+<tr>
+<td><b>User LED</b></td>
+<td><code>PD12</code> (Green, Active HIGH)</td>
+<td><code>PA5</code> (LD2 Green, Active HIGH)</td>
+<td>Port D on AHB1 vs Port A on AHB1</td>
+</tr>
+<tr>
+<td><b>User Button</b></td>
+<td><code>PA0</code> (Blue, Active HIGH)</td>
+<td><code>PC13</code> (B1 Blue, Active LOW)</td>
+<td>Active-HIGH pull-down vs Active-LOW pull-up</td>
+</tr>
+<tr>
+<td><b>Debug Serial</b></td>
+<td>Requires external USB-TTL on USART1/2</td>
+<td><code>PA2</code> (TX), <code>PA3</code> (RX) on USART2</td>
+<td>ST-LINK VCP automatically forwards to PC</td>
+</tr>
+<tr>
+<td><b>I2C Bus</b></td>
+<td>I2C1 on <code>PB6</code> (SCL), <code>PB7</code> (SDA)</td>
+<td>I2C1 on <code>PB8</code> (SCL), <code>PB9</code> (SDA)</td>
+<td>Arduino Uno Rev3 Header compatibility</td>
+</tr>
+<tr>
+<td><b>SPI Bus</b></td>
+<td>SPI1 on <code>PA5</code>, <code>PA6</code>, <code>PA7</code></td>
+<td>SPI2 on <code>PB12</code>, <code>PB13</code>, <code>PB14</code>, <code>PB15</code></td>
+<td><b>Avoids PA5 conflict with User LED!</b></td>
+</tr>
+</tbody></table>
+<h3>Real-World Engineering Gotcha: The PA5 Conflict</h3>
+<p>On Nucleo boards, <code>PA5</code> is physically hardwired to <code>LD2</code> LED. If <code>SPI1</code> is used with default pins (<code>PA5 = SPI1_SCK</code>), toggling SPI clock forces <code>LD2</code> to flicker furiously and distorts the clock rise time due to LED capacitance.</p>
+<p><b>Resolution:</b> By mapping <code>BoardConfig.h</code> to <b>SPI2</b> (<code>PB12</code> NSS, <code>PB13</code> SCK, <code>PB14</code> MISO, <code>PB15</code> MOSI), both the User LED and SPI communications operate concurrently without electrical conflict.</p>
+<hr>
+<h2>7. Mandatory Example Applications</h2>
+<p>All applications are fully implemented, verified, and integrated into the multi-target Makefile:</p>
+<h3>7.1 GPIO Applications</h3>
+<p>1. <b>Button Input with LED Debounce (<code>examples/example_gpio_button_led.c</code>):</b></p>
+<p>   - Polls User Button <code>PC13</code> (active LOW).</p>
+<p>   - Executes a 30 ms debouncing delay on edge detection.</p>
+<p>   - Toggles User LED <code>PA5</code> and waits for button release to prevent oscillation.</p>
+<p>2. <b>Software PWM LED Brightness Fade (<code>examples/example_gpio_pwm_fade.c</code>):</b></p>
+<p>   - Implements a 500 Hz software PWM loop (<code>2000 µs</code> period, 100 duty cycle steps).</p>
+<p>   - Smoothly ramps duty cycle up from 0% to 100% and back down in a continuous triangular breathing pattern.</p>
+<h3>7.2 USART Applications</h3>
+<p>3. <b>Interactive Character Echo Server (<code>examples/example_usart_echo.c</code>):</b></p>
+<p>   - Configures USART2 on <code>PA2</code>/<code>PA3</code> at 115200 baud, 8N1.</p>
+<p>   - Transmits startup banner over ST-LINK Virtual COM Port.</p>
+<p>   - Continuously receives characters and echoes them back with carriage-return line-feed processing.</p>
+<p>4. <b>Structured Telemetry Frames (<code>examples/example_usart_structured_msg.c</code>):</b></p>
+<p>   - Transmits periodic 1 Hz heartbeat telemetry frames:</p>
+<p>     <code>[HEARTBEAT] Uptime = 14 s | Status: NORMAL | Total Presses = 3</code></p>
+<p>   - Detects button presses and instantly transmits asynchronous notification packets:</p>
+<p>     <code>[EVENT] User Button PRESSED! Count = 4 | LED = ON</code></p>
+<h3>7.3 I2C Applications</h3>
+<p>5. <b>LM75 Temperature Reader (<code>examples/example_i2c_lm75_uart.c</code>):</b></p>
+<p>   - Queries LM75 temperature sensor at 7-bit address <code>0x48</code> over I2C1 (<code>PB8</code>/<code>PB9</code>).</p>
+<p>   - Writes register pointer <code>0x00</code> with repeated start (<code>I2C_ENABLE_SR</code>), then reads 2-byte signed temperature.</p>
+<p>   - Formats and prints temperature telemetry over USART2:</p>
+<p>     <code>[12] [LM75 HARDWARE] Temp: 24.50 C (MSB: 0x18, LSB: 0x80)</code></p>
+<p>   - Includes graceful bench simulation fallback if no external hardware is plugged into the bus.</p>
+<p>6. <b>I2C 7-Bit Bus Address Scanner (<code>examples/example_i2c_scanner.c</code>):</b></p>
+<p>   - Probes addresses <code>0x01</code> through <code>0x7F</code>.</p>
+<p>   - Sends start condition and address write byte, monitoring <code>ADDR</code> (ACK) and <code>AF</code> (NACK) flags.</p>
+<p>   - Prints a formatted ASCII memory grid of all detected slave devices over USART2.</p>
+<h3>7.4 SPI Applications</h3>
+<p>7. <b>Logic Analyzer Test Pattern Generator (<code>examples/example_spi_test_pattern.c</code>):</b></p>
+<p>   - Transmits deterministic test bursts on SPI2 (<code>PB12</code> CS, <code>PB13</code> SCK, <code>PB15</code> MOSI).</p>
+<p>   - Generates alternating preamble patterns (<code>0xAA, 0x55</code>), counting ramps (<code>0x00</code> to <code>0xFF</code>), and magic packets (<code>0xDEADBEEF</code>).</p>
+<p>   - Delimits frames with manual active-LOW chip select for clean triggering on logic analyzers.</p>
+<p>8. <b>Full-Duplex SPI Loopback Verification (<code>examples/example_spi_loopback_verify.c</code>):</b></p>
+<p>   - Connects MOSI (<code>PB15</code>) directly to MISO (<code>PB14</code>) with a jumper wire.</p>
+<p>   - Transmits test strings while simultaneously reading back bytes from <code>DR</code>.</p>
+<p>   - Verifies byte-by-byte data integrity and outputs Pass/Fail statistics to USART2.</p>
+<hr>
+<h2>8. Personal Reflection & Learning Insights</h2>
+<h3>What Was Easy vs. Challenging</h3>
+<p>Writing the GPIO driver was straightforward due to the orthogonal nature of the <code>MODER</code>, <code>ODR</code>, and <code>IDR</code> registers. In contrast, the I2C driver presented significant complexity. The STM32 I2C hardware architecture relies heavily on specific register read sequences (such as clearing <code>ADDR</code> by reading <code>SR1</code> followed by <code>SR2</code>) and hardware clock stretching. Overlooking the exact sequence where <code>ACK</code> must be cleared <i>before</i> reading the final byte causes the master to improperly ACK unwanted bytes on the bus.</p>
+<h3>Board Porting Experience</h3>
+<p>Porting code between the STM32F4-Discovery and Nucleo boards highlighted the critical role of a clean board abstraction header (<code>BoardConfig.h</code>). The active-LOW button polarity on Nucleo (<code>PC13</code> pulled to GND) required inverting the logic threshold used for Discovery's active-HIGH button (<code>PA0</code>). Furthermore, the hardware pin conflict on <code>PA5</code> demonstrated that peripheral multiplexing must always be verified against board schematics.</p>
+<h3>Core Takeaways on Embedded Driver Design</h3>
+<p>Bare-metal driver development provides an unparalleled appreciation for:</p>
+<p>1. <b>Clock Tree Discipline:</b> Peripherals cannot function without their corresponding RCC clock gate being explicitly enabled.</p>
+<p>2. <b>Defensive Bit-Masking:</b> Read-modify-write operations must always clear the target bit fields before writing new values to avoid corrupting adjacent register fields.</p>
+<p>3. <b>Hardware Abstraction Boundaries:</b> Clean separation between peripheral driver logic (<code>stm32f446xx_*.c</code>) and application board wiring (<code>BoardConfig.h</code>) enables seamless portability across microcontrollers.</p>
+</body></html>

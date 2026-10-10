@@ -1,0 +1,24 @@
+# Build output directories
+Debug/
+Release/
+build/
+bin/
+obj/
+
+# Compiled objects, dependencies, and binaries
+*.o
+*.d
+*.su
+*.crf
+*.d_raw
+*.axf
+*.map
+*.elf
+*.bin
+*.hex
+*.list
+
+# OS and temporary files
+.DS_Store
+Thumbs.db
+*~
